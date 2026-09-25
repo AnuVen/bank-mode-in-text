@@ -1,6 +1,7 @@
 package com.bankmodetext;
 
 import com.google.inject.Provides;
+import java.awt.Color;
 import java.awt.Rectangle;
 import javax.inject.Inject;
 import net.runelite.api.Client;
@@ -16,18 +17,17 @@ import net.runelite.api.widgets.WidgetType;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.util.ColorUtil;
 
 @PluginDescriptor(
 	name = "Bank Mode Text"
 )
 public class BankModeTextPlugin extends Plugin
 {
-	private static final int TEXT_COLOR = 0xFF981F;
-	private static final int HOVER_COLOR = 0xFFFFFF;
-	private static final int FONT_ID = 494;
+	private static final Color HOVER_COLOR = Color.WHITE;
 
 	@Inject
 	private Client client;
@@ -36,15 +36,11 @@ public class BankModeTextPlugin extends Plugin
 	private ClientThread clientThread;
 
 	@Inject
-	private OverlayManager overlayManager;
-
-	@Inject
-	private BankModeTextOverlay overlay;
+	private BankModeTextConfig config;
 
 	@Override
 	protected void startUp()
 	{
-		overlayManager.add(overlay);
 		clientThread.invokeLater(this::updateWidgets);
 	}
 
@@ -70,7 +66,6 @@ public class BankModeTextPlugin extends Plugin
 			}
 
 		});
-		overlayManager.remove(overlay);
 	}
 
 	@Subscribe
@@ -93,84 +88,118 @@ public class BankModeTextPlugin extends Plugin
 	}
 
 	@Subscribe
+	public void onConfigChanged(ConfigChanged event)
+	{
+		if (BankModeTextConfig.GROUP.equals(event.getGroup()))
+		{
+			clientThread.invokeLater(this::updateWidgets);
+		}
+	}
+
+	@Subscribe
 	public void onClientTick(ClientTick event)
 	{
-		updateHoverState(
-			client.getWidget(InterfaceID.Bankmain.SWAP_INSERT_GRAPHIC),
-			client.getWidget(InterfaceID.Bankmain.SWAP_INSERT)
-		);
-		updateHoverState(
-			client.getWidget(InterfaceID.Bankmain.NOTE_GRAPHIC),
-			client.getWidget(InterfaceID.Bankmain.NOTE)
-		);
+		updateLabels();
 	}
 
 	private void updateWidgets()
 	{
-		updateSwapInsertText();
-		updateNoteText();
-	}
-
-	private void updateSwapInsertText()
-	{
-		Widget graphicWidget = client.getWidget(InterfaceID.Bankmain.SWAP_INSERT_GRAPHIC);
-
-		if (graphicWidget == null)
+		Widget swapInsertGraphic = client.getWidget(InterfaceID.Bankmain.SWAP_INSERT_GRAPHIC);
+		if (swapInsertGraphic != null)
 		{
-			return;
+			applyStyle(swapInsertGraphic);
 		}
 
+		Widget noteGraphic = client.getWidget(InterfaceID.Bankmain.NOTE_GRAPHIC);
+		if (noteGraphic != null)
+		{
+			applyStyle(noteGraphic);
+		}
+
+		updateLabels();
+	}
+
+	private void updateLabels()
+	{
+		Widget swapInsertGraphic = client.getWidget(InterfaceID.Bankmain.SWAP_INSERT_GRAPHIC);
+		if (isStyled(swapInsertGraphic))
+		{
+			boolean hovered = isHovered(client.getWidget(InterfaceID.Bankmain.SWAP_INSERT));
+			setLabel(swapInsertGraphic, getSwapInsertText(hovered), hovered);
+		}
+
+		Widget noteGraphic = client.getWidget(InterfaceID.Bankmain.NOTE_GRAPHIC);
+		if (isStyled(noteGraphic))
+		{
+			boolean hovered = isHovered(client.getWidget(InterfaceID.Bankmain.NOTE));
+			setLabel(noteGraphic, "Note", hovered);
+		}
+	}
+
+	private String getSwapInsertText(boolean hovered)
+	{
 		int mode = client.getVarbitValue(Varbits.BANK_REARRANGE_MODE);
-		String text = mode == 0 ? "Insert" : "Swap";
 
-		applyText(graphicWidget, text);
-	}
-
-	private void updateNoteText()
-	{
-		Widget graphicWidget = client.getWidget(InterfaceID.Bankmain.NOTE_GRAPHIC);
-
-		if (graphicWidget == null)
+		if (!config.showBothModes())
 		{
-			return;
+			return mode == 0 ? "Insert" : "Swap";
 		}
 
-		applyText(graphicWidget, "Note");
+		// Both modes are shown with color tags, which override the widget's text color
+		Color activeColor = hovered ? HOVER_COLOR : config.textColor();
+		Color inactiveColor = config.inactiveModeColor();
+		boolean insertActive = mode == 1;
+
+		return ColorUtil.wrapWithColorTag("Swap", insertActive ? inactiveColor : activeColor)
+			+ "<br>"
+			+ ColorUtil.wrapWithColorTag("Insert", insertActive ? activeColor : inactiveColor);
 	}
 
-	private void applyText(Widget widget, String text)
+	private void applyStyle(Widget widget)
 	{
 		widget.setHidden(false);
 		widget.setType(WidgetType.TEXT);
-		widget.setText(text);
-		widget.setFontId(FONT_ID);
-		widget.setTextColor(TEXT_COLOR);
+		widget.setFontId(config.font().getFontId());
 		widget.setTextShadowed(true);
 		widget.setXTextAlignment(1);
 		widget.setYTextAlignment(1);
 		widget.revalidate();
 	}
 
-	private void updateHoverState(Widget textWidget, Widget containerWidget)
+	private void setLabel(Widget widget, String text, boolean hovered)
 	{
-		if (textWidget == null || textWidget.isHidden() || containerWidget == null)
+		if (!text.equals(widget.getText()))
 		{
-			return;
+			widget.setText(text);
+		}
+
+		int color = (hovered ? HOVER_COLOR : config.textColor()).getRGB() & 0xFFFFFF;
+		if (widget.getTextColor() != color)
+		{
+			widget.setTextColor(color);
+		}
+	}
+
+	private static boolean isStyled(Widget widget)
+	{
+		return widget != null && !widget.isHidden() && widget.getType() == WidgetType.TEXT;
+	}
+
+	private boolean isHovered(Widget containerWidget)
+	{
+		if (containerWidget == null)
+		{
+			return false;
 		}
 
 		Rectangle bounds = containerWidget.getBounds();
 		if (bounds == null)
 		{
-			return;
+			return false;
 		}
 
 		Point mousePos = client.getMouseCanvasPosition();
-		int color = bounds.contains(mousePos.getX(), mousePos.getY()) ? HOVER_COLOR : TEXT_COLOR;
-
-		if (textWidget.getTextColor() != color)
-		{
-			textWidget.setTextColor(color);
-		}
+		return bounds.contains(mousePos.getX(), mousePos.getY());
 	}
 
 	@Provides
